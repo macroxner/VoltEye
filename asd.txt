@@ -1,0 +1,14 @@
+📈 K/D Ratio
+💀 Total Deaths
+⚔️ Total Kills
+🏆 Kills esta semana
+📅 Kills hoy
+👑 MVP del día
+🔥 Killstreak más larga
+💰 Plata obtenida por kills
+🎯 Arma con la que más mata
+☠️ Jugador que más le mata
+⚡ Jugador al que más mata
+📊 Gráficas de evolución
+📆 Estadísticas por temporada
+🌍 Estadísticas por tipo de contenido (ZvZ, Ava, Open World, etc.)
