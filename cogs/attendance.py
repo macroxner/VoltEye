@@ -1,5 +1,5 @@
-import re
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, urlparse
 
 import discord
 from discord.ext import commands
@@ -14,20 +14,66 @@ from utils.helpers import (
 )
 
 
-BATTLE_URL_PATTERN = re.compile(
-    r"^https?://(?:www\.)?(?:europe\.)?albionbb\.com/battles/(\d+)(?:[/?#].*)?$",
-    re.IGNORECASE,
-)
-
-
-def parse_battle_id(value: str) -> str | None:
+def parse_battle_ids(value: str) -> list[str]:
+    """
+    Acepta:
+    - ID directo: 403129539
+    - Battle normal:
+      https://europe.albionbb.com/battles/403129539
+    - Multi:
+      https://europe.albionbb.com/battles/multi?ids=403129539,403133064
+    """
     value = value.strip()
 
     if value.isdigit():
-        return value
+        return [value]
 
-    match = BATTLE_URL_PATTERN.match(value)
-    return match.group(1) if match else None
+    try:
+        parsed = urlparse(value)
+    except Exception:
+        return []
+
+    host = parsed.netloc.lower()
+
+    if not (
+        host == "albionbb.com"
+        or host.endswith(".albionbb.com")
+    ):
+        return []
+
+    path = parsed.path.rstrip("/")
+
+    if path.endswith("/battles/multi"):
+        query = parse_qs(parsed.query)
+        raw_values = query.get("ids", [])
+
+        battle_ids = []
+
+        for raw_value in raw_values:
+            for battle_id in raw_value.split(","):
+                battle_id = battle_id.strip()
+
+                if battle_id.isdigit():
+                    battle_ids.append(battle_id)
+
+        return list(dict.fromkeys(battle_ids))
+
+    parts = [part for part in parsed.path.split("/") if part]
+
+    if len(parts) >= 2 and parts[-2].lower() == "battles":
+        battle_id = parts[-1]
+
+        if battle_id.isdigit():
+            return [battle_id]
+
+    return []
+
+
+def make_report_id(battle_ids: list[str]) -> str:
+    if len(battle_ids) == 1:
+        return battle_ids[0]
+
+    return "multi_" + "_".join(battle_ids)
 
 
 def normalize_name(value: str | None) -> str:
@@ -518,28 +564,30 @@ class AttendanceCog(commands.Cog):
         battle_url: str | None = None,
     ):
         """
-        Procesa una battleboard y actualiza:
-        - attendance;
-        - kills y muertes de jugadores enlazados;
-        - mensaje resumen.
+        Procesa una battleboard normal o una multi de AlbionBB.
 
-        Uso:
+        Ejemplos:
         !battles https://europe.albionbb.com/battles/400379087
+
+        !battles https://europe.albionbb.com/battles/multi?ids=403129539,403133064,403141882
         """
         if not battle_url:
             await ctx.reply(
                 embed=error_embed(
                     "Uso: `!battles URL`\n"
-                    "Ejemplo: "
-                    "`!battles https://europe.albionbb.com/battles/400379087`"
+                    "Normal: "
+                    "`!battles https://europe.albionbb.com/battles/400379087`\n"
+                    "Multi: "
+                    "`!battles https://europe.albionbb.com/battles/multi?"
+                    "ids=403129539,403133064`"
                 ),
                 mention_author=False,
             )
             return
 
-        battle_id = parse_battle_id(battle_url)
+        battle_ids = parse_battle_ids(battle_url)
 
-        if not battle_id:
+        if not battle_ids:
             await ctx.reply(
                 embed=error_embed(
                     "El enlace no parece una battleboard válida de AlbionBB."
@@ -548,83 +596,176 @@ class AttendanceCog(commands.Cog):
             )
             return
 
-        if await self.bot.db.battle_exists(battle_id):
+        report_id = make_report_id(battle_ids)
+
+        if await self.bot.db.battle_exists(report_id):
             await ctx.reply(
                 embed=error_embed(
-                    f"La battleboard `{battle_id}` ya fue procesada."
+                    "Esta battleboard ya fue procesada.\n"
+                    f"`{report_id}`"
                 ),
                 mention_author=False,
             )
             return
 
+        if len(battle_ids) == 1:
+            processing_text = (
+                f"⏳ Procesando battleboard `{battle_ids[0]}`..."
+            )
+        else:
+            processing_text = (
+                f"⏳ Procesando multi con **{len(battle_ids)} battles**..."
+            )
+
         processing_message = await ctx.reply(
-            f"⏳ Procesando battleboard `{battle_id}`...",
+            processing_text,
             mention_author=False,
         )
 
         try:
-            battle_data = await self.bot.albion.get_battle(battle_id)
+            battles_data: list[tuple[str, dict]] = []
+            failed_battles: list[str] = []
 
-            if not isinstance(battle_data, dict):
+            for battle_id in battle_ids:
+                try:
+                    battle_data = await self.bot.albion.get_battle(
+                        battle_id
+                    )
+
+                    if not isinstance(battle_data, dict):
+                        raise ValueError(
+                            "La API no devolvió un objeto válido."
+                        )
+
+                    battles_data.append((battle_id, battle_data))
+
+                except Exception as error:
+                    print(
+                        f"Error leyendo battle {battle_id}: "
+                        f"{type(error).__name__}: {error}"
+                    )
+                    failed_battles.append(battle_id)
+
+            if not battles_data:
                 raise ValueError(
-                    "La API no devolvió un objeto válido para la batalla."
+                    "No se pudo leer ninguna de las battleboards "
+                    "incluidas en el enlace."
                 )
 
-            player_records = extract_battle_player_records(battle_data)
-            participant_ids, participant_names = extract_battle_players(
-                battle_data
-            )
-
-            if not participant_ids and not participant_names:
-                raise ValueError(
-                    "La batalla existe, pero no se pudieron leer "
-                    "sus participantes."
-                )
-
-            battle_time = extract_battle_time(battle_data)
             linked_players = await self.bot.db.get_all_linked_players()
             linked_by_id, linked_by_name = self.make_linked_maps(
                 linked_players
             )
 
-            # Los totales de kills y muertes se leen directamente de los
-            # jugadores de la battleboard. El endpoint de eventos puede devolver
-            # datos incompletos o no coincidir con los participantes enlazados.
-            event_results = await self.save_aggregate_player_stats(
-                battle_id,
-                battle_time,
-                player_records,
-                linked_by_id,
-                linked_by_name,
-            )
+            all_participant_ids: set[str] = set()
+            all_participant_names: set[str] = set()
 
-            # Solo intentamos leer eventos detallados para diagnóstico futuro.
-            # No se usan para calcular los contadores, evitando resultados 0
-            # cuando Albion devuelve una lista parcial o con otro formato.
-            detailed_events = await self.get_battle_events(
-                battle_id,
-                battle_data,
-            )
+            combined_results: dict[str, dict[str, int]] = {}
+            total_kills = 0
+            total_deaths = 0
 
-            print(
-                f"Battle {battle_id}: {len(player_records)} jugadores, "
-                f"{len(detailed_events)} eventos detallados, "
-                f"{event_results['kills']} kills y "
-                f"{event_results['deaths']} muertes registradas."
+            battle_times: list[str] = []
+            processed_event_ids: set[str] = set()
+            detailed_events_total = 0
+
+            for battle_id, battle_data in battles_data:
+                player_records = extract_battle_player_records(
+                    battle_data
+                )
+                participant_ids, participant_names = (
+                    extract_battle_players(battle_data)
+                )
+
+                all_participant_ids.update(participant_ids)
+                all_participant_names.update(participant_names)
+
+                battle_time = extract_battle_time(battle_data)
+                battle_times.append(battle_time)
+
+                # Las stats se calculan SOLO con los datos de cada
+                # battleboard enviada mediante !battles.
+                aggregate = await self.save_aggregate_player_stats(
+                    battle_id,
+                    battle_time,
+                    player_records,
+                    linked_by_id,
+                    linked_by_name,
+                )
+
+                total_kills += aggregate["kills"]
+                total_deaths += aggregate["deaths"]
+
+                for player_name, stats in aggregate["players"].items():
+                    combined_results.setdefault(
+                        player_name,
+                        {"kills": 0, "deaths": 0},
+                    )
+                    combined_results[player_name]["kills"] += (
+                        stats["kills"]
+                    )
+                    combined_results[player_name]["deaths"] += (
+                        stats["deaths"]
+                    )
+
+                # Solo diagnóstico. NO se guardan estos eventos aquí,
+                # evitando contaminar las stats con fuentes externas.
+                detailed_events = await self.get_battle_events(
+                    battle_id,
+                    battle_data,
+                )
+
+                unique_events = []
+
+                for event in detailed_events:
+                    raw_event_id = get_event_id(event)
+
+                    if raw_event_id is None:
+                        continue
+
+                    event_key = str(raw_event_id)
+
+                    if event_key in processed_event_ids:
+                        continue
+
+                    processed_event_ids.add(event_key)
+                    unique_events.append(event)
+
+                detailed_events_total += len(unique_events)
+
+                print(
+                    f"Battle {battle_id}: "
+                    f"{len(player_records)} jugadores, "
+                    f"{len(unique_events)} eventos detallados únicos, "
+                    f"{aggregate['kills']} kills y "
+                    f"{aggregate['deaths']} muertes registradas."
+                )
+
+            if not all_participant_ids and not all_participant_names:
+                raise ValueError(
+                    "Las battles existen, pero no se pudieron leer "
+                    "sus participantes."
+                )
+
+            # Para una multi usamos una única fecha de referencia.
+            # Elegimos la más reciente disponible.
+            report_time = max(battle_times) if battle_times else (
+                datetime.now(timezone.utc).isoformat()
             )
 
             await self.bot.db.save_battle_report(
-                battle_id=battle_id,
+                battle_id=report_id,
                 battle_url=battle_url,
-                battle_time=battle_time,
+                battle_time=report_time,
                 submitted_by=ctx.author.id,
             )
 
+            # La attendance del multi cuenta como UNA sola sesión:
+            # basta con aparecer en cualquiera de sus battleboards.
             present, absent = await self.save_attendance(
-                battle_id,
+                report_id,
                 linked_players,
-                participant_ids,
-                participant_names,
+                all_participant_ids,
+                all_participant_names,
             )
 
             total = len(linked_players)
@@ -634,28 +775,67 @@ class AttendanceCog(commands.Cog):
                 else 0
             )
 
+            if len(battle_ids) == 1:
+                title = (
+                    f"⚔️ Battleboard procesada — {battle_ids[0]}"
+                )
+            else:
+                title = (
+                    f"⚔️ Multi procesada — "
+                    f"{len(battles_data)} battles"
+                )
+
+            description = (
+                f"**Presentes:** {len(present)}/{total}\n"
+                f"**Ausentes:** {len(absent)}\n"
+                f"**Attendance:** {attendance_rate}%\n"
+                f"**Kills registradas:** {total_kills}\n"
+                f"**Muertes registradas:** {total_deaths}\n"
+            )
+
+            if len(battle_ids) > 1:
+                description += (
+                    f"**Battles procesadas:** "
+                    f"{len(battles_data)}/{len(battle_ids)}\n"
+                )
+
+            if failed_battles:
+                description += (
+                    "**No se pudieron leer:** "
+                    + ", ".join(failed_battles)
+                    + "\n"
+                )
+
+            description += (
+                "\nSolo se han contabilizado personajes enlazados "
+                "con VoltEye y únicamente datos de las battleboards "
+                "incluidas en este comando."
+            )
+
             embed = discord.Embed(
-                title=f"⚔️ Battleboard procesada — {battle_id}",
+                title=title,
                 url=battle_url,
-                description=(
-                    f"**Presentes:** {len(present)}/{total}\n"
-                    f"**Ausentes:** {len(absent)}\n"
-                    f"**Attendance:** {attendance_rate}%\n"
-                    f"**Kills registradas:** {event_results['kills']}\n"
-                    f"**Muertes registradas:** {event_results['deaths']}\n\n"
-                    "Solo se han contabilizado personajes enlazados "
-                    "con VoltEye."
-                ),
+                description=description,
                 color=discord.Color.gold(),
             )
 
-            player_results = event_results["players"]
+            if len(battle_ids) > 1:
+                ids_text = ", ".join(battle_ids)
 
-            if player_results:
+                if len(ids_text) > 1024:
+                    ids_text = ids_text[:1000] + "..."
+
+                embed.add_field(
+                    name="🧩 Battles incluidas",
+                    value=ids_text,
+                    inline=False,
+                )
+
+            if combined_results:
                 result_lines = []
 
                 ordered = sorted(
-                    player_results.items(),
+                    combined_results.items(),
                     key=lambda item: (
                         item[1]["kills"],
                         -item[1]["deaths"],
@@ -675,13 +855,13 @@ class AttendanceCog(commands.Cog):
                     chunk_lines(result_lines),
                     start=1,
                 ):
-                    title = "📊 Kills y muertes"
+                    field_title = "📊 Kills y muertes"
 
                     if index > 1:
-                        title += f" ({index})"
+                        field_title += f" ({index})"
 
                     embed.add_field(
-                        name=title,
+                        name=field_title,
                         value=chunk,
                         inline=False,
                     )
@@ -700,13 +880,13 @@ class AttendanceCog(commands.Cog):
                     chunk_lines(present),
                     start=1,
                 ):
-                    title = "✅ Registrados presentes"
+                    field_title = "✅ Registrados presentes"
 
                     if index > 1:
-                        title += f" ({index})"
+                        field_title += f" ({index})"
 
                     embed.add_field(
-                        name=title,
+                        name=field_title,
                         value=chunk,
                         inline=False,
                     )
@@ -722,27 +902,23 @@ class AttendanceCog(commands.Cog):
                     chunk_lines(absent),
                     start=1,
                 ):
-                    title = "❌ Registrados ausentes"
+                    field_title = "❌ Registrados ausentes"
 
                     if index > 1:
-                        title += f" ({index})"
+                        field_title += f" ({index})"
 
                     embed.add_field(
-                        name=title,
+                        name=field_title,
                         value=chunk,
                         inline=False,
                     )
 
-            source_text = (
-                "eventos detallados"
-                if event_results["source"] == "events"
-                else "totales de jugadores"
-            )
-
             embed.set_footer(
                 text=(
-                    f"Datos de estadísticas: {source_text}. "
-                    "La misma battleboard no puede procesarse dos veces."
+                    "Estadísticas obtenidas exclusivamente de las "
+                    "battleboards enviadas con !battles. "
+                    f"Eventos detallados únicos leídos: "
+                    f"{detailed_events_total}."
                 )
             )
 
@@ -753,7 +929,7 @@ class AttendanceCog(commands.Cog):
 
         except Exception as error:
             print(
-                f"Error procesando battle {battle_id}: "
+                f"Error procesando {report_id}: "
                 f"{type(error).__name__}: {error}"
             )
 
