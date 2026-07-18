@@ -555,6 +555,71 @@ class AttendanceCog(commands.Cog):
 
         return present, absent
 
+    @commands.command(name="addattendance")
+    @commands.has_permissions(manage_guild=True)
+    async def addattendance(
+        self,
+        ctx,
+        member: discord.Member,
+        battle_id: str | None = None,
+    ):
+        linked = await self.bot.db.get_player_by_discord_id(member.id)
+
+        if not linked:
+            await ctx.reply(
+                embed=error_embed(
+                    f"{member.mention} no tiene una cuenta enlazada."
+                ),
+                mention_author=False,
+            )
+            return
+
+        # Si no se pasa battle_id, usamos la última battle registrada.
+        if not battle_id:
+            rows = await self.bot.db.get_recent_battle_reports(limit=1)
+
+            if not rows:
+                await ctx.reply(
+                    embed=error_embed(
+                        "No hay ninguna battleboard registrada todavía."
+                    ),
+                    mention_author=False,
+                )
+                return
+
+            battle_id = rows[0]["battle_id"]
+
+        if not await self.bot.db.battle_exists(battle_id):
+            await ctx.reply(
+                embed=error_embed(
+                    f"No existe ninguna battleboard registrada con ID `{battle_id}`."
+                ),
+                mention_author=False,
+            )
+            return
+
+        await self.bot.db.save_battle_attendance(
+            battle_id=battle_id,
+            discord_id=linked["discord_id"],
+            albion_player_id=linked["albion_player_id"],
+            albion_player_name=linked["albion_player_name"],
+            attended=True,
+        )
+
+        embed = discord.Embed(
+            title="✅ Attendance añadido manualmente",
+            description=(
+                f"{member.mention} (`{linked['albion_player_name']}`)\n"
+                f"ha sido marcado como presente en `{battle_id}`."
+            ),
+            color=discord.Color.green(),
+        )
+
+        await ctx.reply(
+            embed=embed,
+            mention_author=False,
+        )
+
     @commands.command(name="battles", aliases=["battle"])
     @commands.has_permissions(manage_guild=True)
     @commands.cooldown(1, 10, commands.BucketType.user)
