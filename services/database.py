@@ -1,18 +1,14 @@
+import os
+import json
 import aiosqlite
 from pathlib import Path
-import json
 
 
 class Database:
     def __init__(self):
-        import os
-        from pathlib import Path
-
-        class Database:
-            def __init__(self):
-                self.db_path = Path(
-                    os.getenv("DATABASE_PATH", "/data/volteye.db")
-                )
+        self.db_path = Path(
+            os.getenv("DATABASE_PATH", "/data/volteye.db")
+        )
 
     async def reset_all_data_except_links(self):
         """
@@ -110,10 +106,12 @@ class Database:
         )
 
         print(f"📁 Database path: {self.db_path}")
-        print(
-            f"📁 Parent exists: "
-            f"{self.db_path.parent.exists()}"
-        )
+
+        async with aiosqlite.connect(self.db_path) as db:
+            # aquí van todos tus CREATE TABLE...
+            await db.commit()
+
+        await self.restore_links_from_backup_if_empty()
 
 
         async with aiosqlite.connect(self.db_path) as db:
