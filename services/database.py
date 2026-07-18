@@ -108,13 +108,7 @@ class Database:
         print(f"📁 Database path: {self.db_path}")
 
         async with aiosqlite.connect(self.db_path) as db:
-            # aquí van todos tus CREATE TABLE...
-            await db.commit()
 
-        await self.restore_links_from_backup_if_empty()
-
-
-        async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS linked_players (
                     discord_id INTEGER PRIMARY KEY,
@@ -138,7 +132,11 @@ class Database:
                     weapon TEXT,
                     killer_name TEXT,
                     victim_name TEXT,
-                    UNIQUE(albion_player_id, event_id, event_type)
+                    UNIQUE(
+                        albion_player_id,
+                        event_id,
+                        event_type
+                    )
                 )
             """)
 
@@ -166,18 +164,16 @@ class Database:
                     albion_player_id TEXT NOT NULL,
                     albion_player_name TEXT NOT NULL,
                     attended INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (battle_id, discord_id),
-                    FOREIGN KEY (battle_id)
-                        REFERENCES battle_reports(battle_id)
-                        ON DELETE CASCADE
+                    PRIMARY KEY (
+                        battle_id,
+                        discord_id
+                    )
                 )
             """)
 
-            await self._ensure_column(db, "player_events", "weapon", "TEXT")
-            await self._ensure_column(db, "player_events", "killer_name", "TEXT")
-            await self._ensure_column(db, "player_events", "victim_name", "TEXT")
-
             await db.commit()
+
+        # SOLO después de crear las tablas
         await self.restore_links_from_backup_if_empty()
 
     async def _ensure_column(self, db, table: str, column: str, column_type: str):
