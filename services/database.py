@@ -5,7 +5,14 @@ import json
 
 class Database:
     def __init__(self):
-        self.db_path = Path("data/volteye.db")
+        import os
+        from pathlib import Path
+
+        class Database:
+            def __init__(self):
+                self.db_path = Path(
+                    os.getenv("DATABASE_PATH", "/data/volteye.db")
+                )
 
     async def reset_all_data_except_links(self):
         """
@@ -97,7 +104,17 @@ class Database:
             )
 
     async def init(self):
-        self.db_path.parent.mkdir(exist_ok=True)
+        self.db_path.parent.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        print(f"📁 Database path: {self.db_path}")
+        print(
+            f"📁 Parent exists: "
+            f"{self.db_path.parent.exists()}"
+        )
+
 
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("""
