@@ -1,4 +1,5 @@
 import aiohttp
+
 from config import ALBION_API_BASE
 
 
@@ -6,19 +7,29 @@ class AlbionAPI:
     def __init__(self):
         self.base_url = ALBION_API_BASE
 
-    async def get_battle(self, battle_id: str):
-        return await self._get(f"/battles/{battle_id}")
-
-    async def _get(self, endpoint: str, params: dict | None = None):
+    async def _get(
+        self,
+        endpoint: str,
+        params: dict | None = None,
+    ):
         url = f"{self.base_url}{endpoint}"
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=15) as response:
+        timeout = aiohttp.ClientTimeout(total=30)
+
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(
+                url,
+                params=params,
+            ) as response:
                 response.raise_for_status()
                 return await response.json()
 
     async def search_player(self, player_name: str):
-        data = await self._get("/search", {"q": player_name})
+        data = await self._get(
+            "/search",
+            {"q": player_name},
+        )
+
         players = data.get("players", [])
 
         if not players:
@@ -26,28 +37,46 @@ class AlbionAPI:
 
         exact_match = next(
             (
-                player for player in players
-                if player.get("Name", "").lower() == player_name.lower()
+                player
+                for player in players
+                if player.get("Name", "").lower()
+                == player_name.lower()
             ),
-            None
+            None,
         )
 
         return exact_match or players[0]
 
     async def get_player_info(self, player_id: str):
-        return await self._get(f"/players/{player_id}")
+        return await self._get(
+            f"/players/{player_id}"
+        )
 
     async def get_player_kills(self, player_id: str):
-        return await self._get(f"/players/{player_id}/kills")
+        return await self._get(
+            f"/players/{player_id}/kills"
+        )
 
     async def get_player_deaths(self, player_id: str):
-        return await self._get(f"/players/{player_id}/deaths")
+        return await self._get(
+            f"/players/{player_id}/deaths"
+        )
 
     async def get_recent_events(self, limit: int = 51):
-        return await self._get("/events", {"limit": limit})
+        return await self._get(
+            "/events",
+            {"limit": limit},
+        )
 
     async def get_battle(self, battle_id: str):
-        return await self._get(f"/battles/{battle_id}")
+        return await self._get(
+            f"/battles/{battle_id}"
+        )
+
+    async def get_battle_events(self, battle_id: str):
+        return await self._get(
+            f"/events/battle/{battle_id}"
+        )
 
     async def get_basic_stats(self, player_id: str):
         info = await self.get_player_info(player_id)

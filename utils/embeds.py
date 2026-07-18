@@ -32,8 +32,6 @@ def stats_embed(member: discord.Member, stats: dict, counters: dict):
     )
 
     embed.add_field(name="👤 Discord", value=member.mention, inline=True)
-    embed.add_field(name="🛡️ Guild", value=stats["guild"], inline=True)
-    embed.add_field(name="🌍 Server", value=ALBION_SERVER.capitalize(), inline=True)
 
     embed.add_field(name="⚔️ Total Kills", value=format_number(total_kills), inline=True)
     embed.add_field(name="💀 Total Deaths", value=format_number(total_deaths), inline=True)
@@ -50,9 +48,6 @@ def stats_embed(member: discord.Member, stats: dict, counters: dict):
     embed.add_field(name="⚡ Más eliminado", value=counters["top_victim"], inline=True)
 
     embed.add_field(name="🔥 Killstreak máxima", value=str(counters["longest_killstreak"]), inline=True)
-
-    embed.add_field(name="🔥 Kill Fame", value=format_number(stats["kill_fame"]), inline=True)
-    embed.add_field(name="💀 Death Fame", value=format_number(stats["death_fame"]), inline=True)
 
     embed.set_footer(text=f"{BOMB_NAME} Intelligence System")
 

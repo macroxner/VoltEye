@@ -1,10 +1,100 @@
 import aiosqlite
 from pathlib import Path
+import json
 
 
 class Database:
     def __init__(self):
         self.db_path = Path("data/volteye.db")
+
+    async def reset_all_data_except_links(self):
+        """
+        Borra absolutamente todos los datos registrados por VoltEye
+        excepto las cuentas Discord <-> Albion enlazadas.
+        """
+
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("DELETE FROM player_events")
+            await db.execute("DELETE FROM posted_events")
+            await db.execute("DELETE FROM battle_attendance")
+            await db.execute("DELETE FROM battle_reports")
+
+            # Reinicia contadores AUTOINCREMENT si existen.
+            try:
+                await db.execute("""
+                    DELETE FROM sqlite_sequence
+                    WHERE name = 'player_events'
+                """)
+            except aiosqlite.OperationalError:
+                pass
+
+            await db.commit()
+
+    async def restore_links_from_backup_if_empty(
+        self,
+        backup_path="linked_players_backup.json"
+    ):
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM linked_players"
+            )
+
+            row = await cursor.fetchone()
+            existing_links = row[0] or 0
+
+            # Si ya existen usuarios en la base persistente,
+            # no tocamos absolutamente nada.
+            if existing_links > 0:
+                print(
+                    f"✅ Linked players ya existentes: "
+                    f"{existing_links}"
+                )
+                return
+
+            path = Path(backup_path)
+
+            if not path.exists():
+                print(
+                    "⚠️ linked_players está vacío y no existe "
+                    "linked_players_backup.json"
+                )
+                return
+
+            with open(
+                path,
+                "r",
+                encoding="utf-8"
+            ) as file:
+                players = json.load(file)
+
+            restored = 0
+
+            for player in players:
+                await db.execute("""
+                    INSERT OR IGNORE INTO linked_players (
+                        discord_id,
+                        discord_name,
+                        albion_player_id,
+                        albion_player_name,
+                        created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?)
+                """, (
+                    player["discord_id"],
+                    player["discord_name"],
+                    player["albion_player_id"],
+                    player["albion_player_name"],
+                    player.get("created_at"),
+                ))
+
+                restored += 1
+
+            await db.commit()
+
+            print(
+                f"♻️ Restaurados {restored} linked players "
+                f"desde el backup."
+            )
 
     async def init(self):
         self.db_path.parent.mkdir(exist_ok=True)
@@ -73,6 +163,7 @@ class Database:
             await self._ensure_column(db, "player_events", "victim_name", "TEXT")
 
             await db.commit()
+        await self.restore_links_from_backup_if_empty()
 
     async def _ensure_column(self, db, table: str, column: str, column_type: str):
         cursor = await db.execute(f"PRAGMA table_info({table})")
@@ -104,6 +195,14 @@ class Database:
     async def unlink_player(self, discord_id):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute("DELETE FROM linked_players WHERE discord_id = ?", (discord_id,))
+            await db.commit()
+
+    async def delete_player_events(self, discord_id: int):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "DELETE FROM player_events WHERE discord_id = ?",
+                (discord_id,)
+            )
             await db.commit()
 
     async def get_player_by_discord_id(self, discord_id):

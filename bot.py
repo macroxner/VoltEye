@@ -31,6 +31,8 @@ class VoltEyeBot(commands.Bot):
             "cogs.graphs",
             "cogs.feed",
             "cogs.attendance",
+            "cogs.admin",
+            "cogs.backup",
         ]:
             await self.load_extension(extension)
 

@@ -22,6 +22,15 @@ class StatsCog(commands.Cog):
     ):
         target = member or ctx.author
 
+        # ==========================================================
+        # IMPORTANTE:
+        # !stats NO consulta kills, deaths ni historial de Albion.
+        #
+        # Todo lo mostrado aquí sale EXCLUSIVAMENTE de la base
+        # de datos de VoltEye, que debe ser rellenada únicamente
+        # mediante !battles <URL>.
+        # ==========================================================
+
         linked = await self.bot.db.get_player_by_discord_id(
             target.id
         )
@@ -43,95 +52,100 @@ class StatsCog(commands.Cog):
             )
             return
 
-        # Solo obtenemos información básica del personaje.
-        # No descargamos ni guardamos sus kills o muertes recientes.
-        try:
-            player_info = await self.bot.albion.get_player_info(
-                linked["albion_player_id"]
-            )
-        except Exception as error:
-            print(
-                "Error obteniendo información del jugador: "
-                f"{type(error).__name__}: {error}"
-            )
+        # ----------------------------------------------------------
+        # NO LLAMAMOS A:
+        #
+        # self.bot.albion.get_basic_stats(...)
+        # self.bot.albion.get_player_kills(...)
+        # self.bot.albion.get_player_deaths(...)
+        # self.bot.albion.get_player_info(...)
+        #
+        # Así es imposible que !stats importe eventos externos.
+        # ----------------------------------------------------------
 
-            # Aunque falle Albion, podemos seguir mostrando las
-            # estadísticas guardadas desde las battleboards.
-            player_info = {
-                "Id": linked["albion_player_id"],
-                "Name": linked["albion_player_name"],
-                "GuildName": None,
-                "AllianceName": None,
-                "LifetimeStatistics": {},
-            }
-
-        lifetime = player_info.get("LifetimeStatistics") or {}
-        pvp = lifetime.get("PvP") or {}
-
-        # Este diccionario mantiene el formato que espera stats_embed,
-        # pero las kills y muertes no se importan desde Albion.
         player_stats = {
-            "id": player_info.get("Id"),
-            "name": (
-                player_info.get("Name")
-                or linked["albion_player_name"]
-            ),
-            "guild": (
-                player_info.get("GuildName")
-                or "Sin guild"
-            ),
-            "alliance": (
-                player_info.get("AllianceName")
-                or "Sin alianza"
-            ),
+            "id": linked["albion_player_id"],
+            "name": linked["albion_player_name"],
 
-            # Estas dos cifras son fama global de Albion.
-            # No son el número de kills o muertes del bot.
-            "kill_fame": pvp.get("KillFame", 0),
-            "death_fame": pvp.get("DeathFame", 0),
+            # No necesitamos consultar Albion para estos datos.
+            # Los dejamos neutrales.
+            "guild": "No registrado",
+            "alliance": "No registrado",
 
-            # Se dejan vacías para impedir cualquier sincronización
-            # accidental del historial reciente.
-            "recent_kills_api": [],
-            "recent_deaths_api": [],
+            # IMPORTANTE:
+            # No usamos la fama global de Albion porque incluiría
+            # contenido ajeno a las battleboards procesadas.
+            "kill_fame": 0,
+            "death_fame": 0,
         }
 
-        counts = await self.bot.db.get_event_counts(target.id)
+        # ==========================================================
+        # TODO A PARTIR DE AQUÍ SALE DE player_events
+        # ==========================================================
 
-        total_kills = counts["total_kills"] or 0
-        total_deaths = counts["total_deaths"] or 0
+        counts = await self.bot.db.get_event_counts(
+            target.id
+        )
 
-        favorite_weapon = await self.bot.db.get_favorite_weapon(
-            target.id
+        total_kills = 0
+        total_deaths = 0
+
+        if counts:
+            total_kills = counts["total_kills"] or 0
+            total_deaths = counts["total_deaths"] or 0
+
+        favorite_weapon = (
+            await self.bot.db.get_favorite_weapon(
+                target.id
+            )
         )
-        top_killer = await self.bot.db.get_top_killer(
-            target.id
+
+        top_killer = (
+            await self.bot.db.get_top_killer(
+                target.id
+            )
         )
-        top_victim = await self.bot.db.get_top_victim(
-            target.id
+
+        top_victim = (
+            await self.bot.db.get_top_victim(
+                target.id
+            )
         )
-        ordered_events = await self.bot.db.get_events_ordered(
-            target.id
+
+        ordered_events = (
+            await self.bot.db.get_events_ordered(
+                target.id
+            )
+        )
+
+        kills_today = (
+            await self.bot.db.get_kills_since(
+                target.id,
+                start_of_today_utc_iso()
+            )
+        )
+
+        deaths_today = (
+            await self.bot.db.get_deaths_since(
+                target.id,
+                start_of_today_utc_iso()
+            )
+        )
+
+        kills_week = (
+            await self.bot.db.get_kills_since(
+                target.id,
+                start_of_week_utc_iso()
+            )
         )
 
         counters = {
             "total_kills": total_kills,
             "total_deaths": total_deaths,
 
-            "kills_today": await self.bot.db.get_kills_since(
-                target.id,
-                start_of_today_utc_iso()
-            ),
-
-            "deaths_today": await self.bot.db.get_deaths_since(
-                target.id,
-                start_of_today_utc_iso()
-            ),
-
-            "kills_week": await self.bot.db.get_kills_since(
-                target.id,
-                start_of_week_utc_iso()
-            ),
+            "kills_today": kills_today,
+            "deaths_today": deaths_today,
+            "kills_week": kills_week,
 
             "favorite_weapon": (
                 f"{favorite_weapon['weapon']} "
@@ -158,6 +172,8 @@ class StatsCog(commands.Cog):
                 calculate_longest_killstreak(
                     ordered_events
                 )
+                if ordered_events
+                else 0
             ),
         }
 
